@@ -14,16 +14,6 @@
 #define PIPE_READ 0
 #define PIPE_WRITE 1
 
-/*
-COMPILAR__
-  gcc Aula6.1.c -lreadline
-
-ALTERAR ERROR CODES__
-  perror();
-  Output-> prints to screen ": SYSTEM_ERROR_SPECIFIC_STRING"
-*/
-
-
 typedef struct command {
     char *cmd;              // string apenas com o comando
     int argc;               // número de argumentos
@@ -41,8 +31,7 @@ COMMAND* parse(char* linha);
 void print_parse(COMMAND* commlist);
 void execute_commands(COMMAND* commlist);
 void free_commlist(COMMAND* commlist);
-int firstcommand = 1;
-//int lastcomand; desnecessario, substituido por (commlist-> == NULL)
+void child_handler(int sig);
 
 // include do código do parser da linha de comandos
 #include "parser.c"
@@ -56,11 +45,11 @@ int main(int argc, char* argv[]) {
       exit(0);
     if (strlen(linha) != 0) {
       add_history(linha);
-      com = parse(linha); //objecto command == input da linha
+      com = parse(linha);
       if (com) {
-	       //print_parse(com);
-	       execute_commands(com);
-	       free_commlist(com);
+	print_parse(com);
+	execute_commands(com);
+	free_commlist(com);
       }
     }
     free(linha);
@@ -88,111 +77,90 @@ void print_parse(COMMAND* commlist) {
   printf("---------------------------------------------------------\n");
 }
 
+void child_handler(int sig) {
+	if(sig==SIGCHLD)
+		waitpid(-1,NULL,WNOHANG);
+}
+
 void free_commlist(COMMAND *commlist){
-    // ...
-    // Esta função deverá libertar a memória alocada para a lista ligada.
-    // ...
-  COMMAND* com;
-  while(commlist != NULL) {
-    com = commlist->next;
-    free(commlist);
-    commlist = com;
-  }
-  background_exec=0;
+    COMMAND* tmp;
+    while(commlist!=NULL) {
+    	tmp= commlist->next;
+    	free(commlist);
+    	commlist=tmp;
+    }
 }
 
 void execute_commands(COMMAND *commlist) {
-    // ...
-    // Esta função deverá "executar" a "pipeline" de comandos da lista commlist.
-    // ...
-  if(strcmp(commlist->argv[0],"exit")==0) {
-    exit(EXIT_SUCCESS);
-  }
+    int pid, fd[2], fdold[2], filepointer, status;
+    COMMAND* liststart = commlist;
 
-  pid_t pid;
-
-  int fd[2];
-  int oldfd[2];
-
-  while(commlist!=NULL) {
-    oldfd[0]=fd[0];
-    oldfd[1]=fd[1];
-    // crio pipe, para partilhar pai e filho
-    if(pipe(fd) == -1) {
-      perror("Error");
-      exit(0);
+    if(strcmp(commlist->argv[0],"exit")==0) {
+    	exit(EXIT_SUCCESS);
     }
 
-    // cria child, pos guardado em pid
-    
-    if((pid=fork()) == -1) {
-      perror("Error");
-      exit(0);
+    if(background_exec)
+    	signal(SIGCHLD,child_handler);
+    else
+    	signal(SIGCHLD,SIG_IGN);
+
+    while(commlist!=NULL) {
+    	fdold[0]=fd[0];
+    	fdold[1]=fd[1];
+
+		if(commlist->next!=NULL) {
+    		if(pipe(fd)==-1) {
+    			//error
+    		}
+   		}
+
+    	if((pid=fork())==-1) {
+    		//error
+    	}
+
+    	if(pid) {
+    		if(liststart!=commlist) {
+    			close(fdold[0]);
+    			close(fdold[1]);
+    		}
+    		commlist=commlist->next;
+    	}else{
+    		if(liststart!=commlist) {
+    			dup2(fdold[0],0);
+    			close(fdold[0]);
+    			close(fdold[1]);
+    		}
+
+    		if(commlist->next!=NULL) {
+    			dup2(fd[1],1);
+    			close(fd[0]);
+    			close(fd[1]);
+    		}
+
+    		if(commlist==liststart && inputfile != NULL) {
+    			filepointer = open(inputfile,O_RDONLY);
+    			if(filepointer==-1) {
+    				//error
+    			}
+    			dup2(filepointer,0);
+    			close(filepointer);
+    		}
+
+    		if(commlist->next==NULL && outputfile!=NULL) {
+    			filepointer = open(outputfile,O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    			if(filepointer==-1) {
+    				//error
+    			}
+    			dup2(filepointer,1);
+    			close(filepointer);
+    		}
+
+    		execvp(commlist->cmd,commlist->argv);
+    	}
     }
 
-    //fd[0] read, fd[1] write
-
-    //parent
-    if(pid) {
-      //o pai so serve para contar firstcommand e fechar pipes antigos
-      if(firstcommand==1) firstcommand=0;
-      else close(oldfd[0]); //já foi executado fecha read antigo
-
-      //ja foi executado fecha fd escrita
-      close(fd[1]);
-
-      if(commlist->next==NULL) {
-        close(fd[0]);
-      }
-
-      commlist = commlist->next; //IR PARA O PROXIMO COMANDO
-
-      wait(NULL);
-    } 
-    //child
-    else {
-      if(inputfile != NULL && firstcommand == 1) {
-        int file;
-          /* Abre o ficheiro e guarda file descriptor */
-          if ((file = open(inputfile, O_RDONLY)) < 0 ) {
-            perror("Error");
-            exit(EXIT_FAILURE);
-          }
-          /* Duplica o file descriptor e substitui pelo STDIN */
-          dup2(file, STDIN_FILENO); //dup2(source,destino)
-      }
-
-      //se nao e o primeiro comando le do processo pai
-      if(firstcommand==0) {
-        dup2(oldfd[0],0);
-      }
-
-      if(outputfile!=NULL && commlist->next != NULL) {
-        int file;
-        /* Abre o ficheiro e guarda o file descriptor */
-        if ((file = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU)) < 0) {
-            perror("Error");
-            exit(EXIT_FAILURE);
-          }
-          /* Duplica o file descriptor e substitui pelo STDOUT */
-          dup2(file, STDOUT_FILENO); //dup2(source,destino)
-
-      }
-
-      //se ha mais comandos isto escreve na pipe
-      if(commlist->next!=NULL) {
-        dup2(fd[1],STDOUT_FILENO);
-      }
-
-      if(execvp(commlist->cmd,commlist->argv) < 0) { //versao generica do execlp, 2 argumentos execvp(comando,vector com argumentos)
-        //exec error
-       perror("Error");
-       exit(EXIT_FAILURE);
-      }
-
+    if(background_exec==0) {
+    	waitpid(pid,&status, WUNTRACED| WCONTINUED);
     }
-  }
-
-} 
-
+}
 
